@@ -8,22 +8,23 @@ load_dotenv()
 
 async def generate_market_research(topic: str):
     try:
-        print(f"Starting AI course market research on topic: {topic}")
+        print(f"Starting market research on topic: {topic}")
         
         workflow = ResearchWorkflow()
         initial_state = {
             "topic": topic,
             "search_terms": None,
-            "companies": []
+            "companies": [],
+            "output_file": None
         }
         
-        config = {"configurable": {"thread_id": "ai-course-research-thread"}}
+        config = {"configurable": {"thread_id": "market-research-thread"}}
         final_state = await workflow.workflow.ainvoke(initial_state, config)
         
-        print(f"\nFound {len(final_state['companies'])} course providers")
+        print(f"\nFound {len(final_state['companies'])} providers/companies")
         
         filename = await DocumentService.save_to_excel(final_state["companies"])
-        print(f"\nAI course research saved to: {filename}")
+        print(f"\nMarket research saved to: {filename}")
         return filename
         
     except Exception as e:
@@ -31,7 +32,9 @@ async def generate_market_research(topic: str):
         raise e
 
 async def main():
-    topic = "Generative AI, AI Agents Development, LangChain and CrewAI courses"
+ 
+    #topic = "Generative AI, AI Agents Development, LangChain and CrewAI courses"
+    topic = " House Cleaning Services in Buffalo City, New York"
     await generate_market_research(topic)
 
 if __name__ == "__main__":

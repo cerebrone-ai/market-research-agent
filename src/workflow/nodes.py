@@ -3,178 +3,151 @@ from langchain_core.output_parsers import JsonOutputParser
 from ..services.llm_service import LLMService
 from ..models.research_models import SearchTerms, CompanyInfo
 from typing import List
+from pydantic import BaseModel
 import json
 import asyncio
+
+class CompaniesResponse(BaseModel):
+    companies: List[CompanyInfo]
 
 class WorkflowNodes:
     def __init__(self):
         self.llm_service = LLMService()
 
     async def generate_search_terms(self, state):
-        """Generate focused search terms for AI course research."""
-        print("Generating search terms...")
-        
+        """Generate focused search terms based on the research topic."""
         search_terms_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an AI education research specialist. Create focused search terms for finding AI course providers and their offerings.
+            ("system", """You are a research specialist. Analyze the given topic and generate relevant search terms.
             
-            Generate two types of search terms:
-            1. Main terms (5-7 terms) focusing ONLY on:
-               - Generative AI development courses
-               - AI Agents frameworks (LangChain, LangGraph, CrewAI)
-               - Large Language Models programming
-               - Multi-agent systems development
+            For any topic (products, courses, services, companies, etc.), create three categories of search terms:
+            1. Primary Terms (4-5 terms):
+               - Exact names/titles
+               - Main keywords
+               - Specific identifiers
                
-            2. Related terms (3-5 terms) for course details about:
-               - Course pricing and duration
-               - Professional certifications
+            2. Provider/Platform Terms (4-5 terms):
+               - Companies/Organizations offering the item
+               - Platforms/Websites
+               - Distribution channels
+               
+            3. Review/Analysis Terms (3-4 terms):
                - Reviews and ratings
-               
-            Focus exclusively on programming and development courses for GenAI and AI Agents.
-            Do NOT include general AI or machine learning courses."""),
-            ("user", "Create search terms to find AI courses and platforms for: {topic}")
+               - Comparisons
+               - User experiences/feedback"""),
+            ("user", "Create focused search terms for researching: {topic}")
         ])
         
         generate_terms = search_terms_prompt | self.llm_service.fast_llm.with_structured_output(SearchTerms)
         search_terms = await generate_terms.ainvoke({"topic": state["topic"]})
-        
         return {**state, "search_terms": search_terms}
 
     async def gather_company_data(self, state):
-        """Gather course provider information and details."""
-        print("Gathering course provider data...")
-        
-        # Get search terms from state
-        search_terms = state["search_terms"]
-        if not search_terms:
-            print("Warning: No search terms found in state")
-            return state
-        
+        """Gather comprehensive research data based on the topic."""
         search_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a course data extraction specialist focusing on GenAI and AI Agents development courses.
-            
-            Extract ONLY courses related to:
-            - Generative AI development
-            - AI Agents frameworks (LangChain, AutoGPT, CrewAI)
-            - LLM programming and integration
-            - Multi-agent systems development
-            
-            DO NOT include courses about:
-            - General AI or machine learning
-            - Data science basics
-            - Non-programming courses
-            
-            Format the output as JSON with these fields:
+            ("system", """You are a research specialist. Extract structured information from search results into this exact format:
+
             {{
                 "companies": [
                     {{
-                        "name": "Platform/Institution Name",
-                        "services": ["Course 1", "Course 2"],
-                        "pricing": {{"Course 1": "Price 1", "Course 2": "Price 2"}},
-                        "contact": "Contact info",
-                        "website": "Website URL",
-                        "rating": 5.0,
-                        "course_details": {{
-                            "durations": {{"Course 1": "Duration 1", "Course 2": "Duration 2"}},
-                            "skill_level": {{"Course 1": "Level 1", "Course 2": "Level 2"}},
-                            "certification": {{"Course 1": true, "Course 2": false}}
+                        "name": "Provider Name",
+                        "products": ["Product/Course Name 1", "Product/Course Name 2"],
+                        "pricing": {{
+                            "Product/Course Name 1": "Price 1",
+                            "Product/Course Name 2": "Price 2"
                         }},
-                        "review_details": {{
-                            "total_reviews": 0,
-                            "highlights": ["Positive point 1", "Positive point 2"],
-                            "concerns": ["Concern 1", "Concern 2"]
+                        "website": "website URL",
+                        "contact": "contact information",
+                        "rating": "numerical rating or 'Not found'",
+                        "product_details": {{
+                            "features": {{
+                                "Product/Course Name 1": ["Feature 1", "Feature 2"]
+                            }},
+                            "specifications": {{
+                                "Product/Course Name 1": ["Spec 1", "Spec 2"]
+                            }},
+                            "availability": {{
+                                "Product/Course Name 1": "Available/Not Available"
+                            }}
+                        }},
+                        "review_analysis": {{
+                            "total_reviews": "number or 'Not found'",
+                            "average_rating": "numerical or 'Not found'",
+                            "positive_points": ["Positive point 1", "Positive point 2"],
+                            "negative_points": ["Negative point 1", "Negative point 2"],
+                            "customer_sentiment": "Overall sentiment description"
+                        }},
+                        "market_details": {{
+                            "market_share": "Percentage or description",
+                            "target_segment": "Target audience description",
+                            "key_competitors": ["Competitor 1", "Competitor 2"]
                         }}
                     }}
                 ]
             }}"""),
-            ("user", "Extract structured course data from these search results: {results}")
+            ("user", """Research topic: {topic}
+            Extract detailed information from these search results: {results}
+            
+            Remember to:
+            1. Include pricing for each product/course
+            2. Provide all required fields
+            3. Use 'Not available' or 'Not found' for missing information""")
         ])
-        
-        # Modified search terms specifically for GenAI and AI Agents
-        expanded_terms = [
-            "LangChain development course certification",
-            "AutoGPT programming tutorial professional",
-            "CrewAI framework course training",
-            "multi-agent systems development course",
-            "generative AI programming certification",
-            "AI agents LangChain AutoGPT course",
-            "LLM integration programming tutorial",
-            "autonomous AI agents development course"
-        ]
-        
-        # Combine all search terms
-        all_terms = list(set(
-            search_terms.main_terms[:4] + 
-            search_terms.related_terms[:2] +  # Added related terms
-            expanded_terms[:4]
-        ))
-        
-        print("\nUsing search terms:")
-        for term in all_terms:
-            print(f"- {term}")
-        
+
+        process_results = search_prompt | self.llm_service.long_context_llm.with_structured_output(CompaniesResponse)
+
+        async def perform_search(term):
+            results = await self.llm_service.tavily_search.ainvoke(term)
+            await asyncio.sleep(1)
+            return results
+
+        search_queries = []
+        for main_term in state["search_terms"].main_terms:
+            if "course" in state["topic"].lower() or "training" in state["topic"].lower():
+                search_queries.extend([
+                    f"{main_term} course curriculum price",
+                    f"{main_term} training reviews ratings",
+                    f"{main_term} certification learning platform"
+                ])
+            elif "product" in state["topic"].lower():
+                search_queries.extend([
+                    f"{main_term} product specifications features",
+                    f"{main_term} price comparison reviews",
+                    f"{main_term} availability retailers"
+                ])
+            else:  
+                search_queries.extend([
+                    f"{main_term} provider details pricing",
+                    f"{main_term} reviews ratings feedback",
+                    f"{main_term} market analysis comparison"
+                ])
+
         companies = []
-        
-        for term in all_terms:
+        for query in search_queries:
             try:
-                print(f"\nSearching for: {term}")
-                search_queries = [
-                    f"{term} course price reviews",
-                    f"{term} training certification"
-                ]
-                
-                for query in search_queries:
-                    results = await self.llm_service.tavily_search.ainvoke(query)
-                    await asyncio.sleep(1)  # Add small delay between searches
-                    
-                    # Process results to JSON
-                    process_results = search_prompt | self.llm_service.long_context_llm | JsonOutputParser()
-                    result_json = await process_results.ainvoke({
-                        "results": results
-                    })
-                    
-                    if isinstance(result_json, str):
-                        result_json = json.loads(result_json)
-                    
-                    # Filter courses to ensure they're relevant
-                    for company_data in result_json.get("companies", []):
-                        try:
-                            # Only include if services contain relevant keywords
-                            relevant_keywords = [
-                                "genai", "generative ai", "langchain", "autogpt", 
-                                "crewai", "llm", "agent", "multi-agent", "autonomous"
-                            ]
-                            
-                            services = [s.lower() for s in company_data.get("services", [])]
-                            if any(keyword in " ".join(services) for keyword in relevant_keywords):
-                                company = CompanyInfo.create_with_defaults(company_data)
-                                companies.append(company)
-                                print(f"Found relevant company: {company.name}")
-                                print(f"  Courses: {', '.join(company.services)}")
-                            else:
-                                print(f"Skipping non-relevant courses from: {company_data.get('name', 'Unknown')}")
-                                
-                        except Exception as e:
-                            print(f"Warning: Failed to parse company data: {str(e)}")
-                            continue
-                
+                results = await perform_search(query)
+                parsed_data = await process_results.ainvoke({
+                    "topic": state["topic"],
+                    "results": results
+                })
+                companies.extend(parsed_data.companies)
             except Exception as e:
-                print(f"Warning: Search error for '{term}': {str(e)}")
+                print(f"Search error for '{query}': {str(e)}")
                 continue
-        
-        # Remove duplicates based on company name
+            
         unique_companies = {company.name: company for company in companies}.values()
-        print(f"\nTotal unique companies found: {len(unique_companies)}")
         
-        print("\nRelevant companies found:")
+        print(f"\nTotal unique providers/platforms found: {len(unique_companies)}")
+        
+        print("\nRelevant results found:")
         for company in unique_companies:
             print(f"- {company.name}")
-            if company.services:
-                print(f"  Courses: {', '.join(company.services)}")
+            if company.products:
+                print(f"  Products: {', '.join(company.products)}")
             if company.rating:
                 print(f"  Rating: {company.rating}")
             if company.pricing:
-                for course, price in company.pricing.items():
-                    print(f"  Price for {course}: {price}")
+                for product, price in company.pricing.items():
+                    print(f"  Price for {product}: {price}")
         
         return {**state, "companies": list(unique_companies)}
 
