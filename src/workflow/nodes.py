@@ -4,6 +4,7 @@ from ..services.llm_service import LLMService
 from ..models.research_models import SearchTerms, CompanyInfo
 from typing import List
 import json
+import asyncio
 
 class WorkflowNodes:
     def __init__(self):
@@ -17,14 +18,15 @@ class WorkflowNodes:
             ("system", """You are a market research specialist. Create focused search terms for finding companies and their services.
             
             Generate two types of search terms:
-            1. Main terms: 3-5 primary search phrases to find companies and services
-            2. Related terms: 3-5 secondary phrases for pricing and reviews
+            1. Main terms: 5-7 primary search phrases to find companies and services in specific locations
+            2. Related terms: 5-7 secondary phrases for detailed pricing and reviews
             
-            Focus on terms that will help find:
-            - Company listings
-            - Service offerings
-            - Pricing information
-            - Reviews and ratings"""),
+            Include location-specific terms and ensure coverage of:
+            - Local company directories
+            - Service comparison sites
+            - Review platforms
+            - Price comparison websites
+            - Local business associations"""),
             ("user", "Create search terms to find companies and services for: {topic}")
         ])
         
@@ -39,79 +41,105 @@ class WorkflowNodes:
         search_terms = state["search_terms"]
         companies = []
         
+        # Define search_prompt with escaped curly braces in the JSON example
         search_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a market research specialist. Extract detailed company information from the search results.
-            Return the data as a list of companies with their details.
+            ("system", """You are a data extraction specialist. Extract company information from search results and format it as JSON.
             
-            For each company found, include:
-            - Company name (required)
-            - List of services offered (required)
-            - Pricing details for each service (if available, otherwise use 'Contact for pricing')
-            - Contact information (if available, otherwise use 'Not available')
-            - Service area/location (required)
-            - Website URL (if available, otherwise use 'Not available')
-            - Rating (if available, use null if missing)
-            
-            Ensure to extract as much detail as possible from the search results."""),
-            ("user", """Please analyze these search results and extract company information in the following JSON format:
+            The output should be a JSON object with a "companies" array containing objects with these fields:
             {{
                 "companies": [
                     {{
                         "name": "Company Name",
                         "services": ["Service 1", "Service 2"],
-                        "pricing": {{
-                            "Service 1": "Price or 'Contact for pricing'",
-                            "Service 2": "Price or 'Contact for pricing'"
-                        }},
-                        "contact": "Phone/email or 'Not available'",
-                        "location": "Service area",
-                        "website": "URL or 'Not available'",
-                        "rating": null
+                        "pricing": {{"Service 1": "Price 1", "Service 2": "Price 2"}},
+                        "contact": "Contact info",
+                        "location": "Company location",
+                        "website": "Website URL",
+                        "rating": 5.0,
+                        "review_details": {{
+                            "total_reviews": 0,
+                            "highlights": ["Highlight 1", "Highlight 2"],
+                            "concerns": ["Concern 1", "Concern 2"]
+                        }}
                     }}
                 ]
             }}
             
-            Search Results: {results}""")
+            Only include companies with clear, verifiable information. Skip entries with insufficient data. Ensure to extract ratings, reviews, and any highlights or concerns mentioned."""),
+            ("user", "Extract structured company data from these search results: {results} in {location}")
         ])
         
-        for term in search_terms.main_terms + search_terms.related_terms:
+        # Reduce the number of expanded terms
+        location = state["topic"].split(":")[-1].strip()
+        expanded_terms = [
+            f"cleaning services {location}",
+            f"house cleaning {location}",
+            f"maid service {location}",
+            f"top rated cleaning companies {location}",
+            f"affordable cleaning service {location}"
+        ]  # Reduced from 11 to 5 terms
+        
+        # Use a limited set of search terms to avoid too many API calls
+        all_terms = list(set(search_terms.main_terms[:3] + search_terms.related_terms[:2] + expanded_terms[:3]))
+        
+        for term in all_terms:
             try:
                 print(f"Searching for: {term}")
-                results = await self.llm_service.tavily_search.ainvoke(
-                    f"{term} companies services pricing reviews"
-                )
+                # Reduce search queries per term
+                search_queries = [
+                    f"{term} hourly rate price cost reviews ratings",
+                    f"{term} companies directory listings"
+                ]  # Reduced from 4 to 2 queries
                 
-                process_results = search_prompt | self.llm_service.long_context_llm | JsonOutputParser()
-                result_json = await process_results.ainvoke({"results": results})
-                
-
-                if isinstance(result_json, str):
-                    result_json = json.loads(result_json)
-                
-                for company_data in result_json.get("companies", []):
-                    try:
-
-                        company = CompanyInfo.create_with_defaults(company_data)
-                        
-
-                        if not company.pricing or all(value == "Contact for pricing" for value in company.pricing.values()):
-                            print(f"Warning: Pricing details are missing for {company.name}.")
-                        
-                        if company.contact == "Not available":
-                            print(f"Warning: Contact information is missing for {company.name}.")
-                        
-                        companies.append(company)
-                        print(f"Found company: {company.name}")
-                    except Exception as e:
-                        print(f"Warning: Failed to parse company data: {str(e)}")
-                        continue
+                # Add delay between searches to avoid rate limits
+                for query in search_queries:
+                    results = await self.llm_service.tavily_search.ainvoke(query)
+                    await asyncio.sleep(1)  # Add small delay between searches
+                    
+                    # Process results to JSON
+                    process_results = search_prompt | self.llm_service.long_context_llm | JsonOutputParser()
+                    result_json = await process_results.ainvoke({
+                        "results": results,
+                        "location": location
+                    })
+                    
+                    # Debug: Print raw JSON output
+                    print("Raw JSON output:", result_json)
+                    
+                    if isinstance(result_json, str):
+                        result_json = json.loads(result_json)
+                    
+                    for company_data in result_json.get("companies", []):
+                        try:
+                            # Check for meaningful data
+                            if not company_data.get("rating") or company_data.get("rating") == 0:
+                                print(f"Warning: No rating found for {company_data.get('name')}")
+                            if not company_data.get("review_details", {}).get("total_reviews"):
+                                print(f"Warning: No reviews found for {company_data.get('name')}")
+                            
+                            company = CompanyInfo.create_with_defaults(company_data)
+                            companies.append(company)
+                            print(f"Found company: {company.name}")
+                            
+                        except Exception as e:
+                            print(f"Warning: Failed to parse company data: {str(e)}")
+                            continue
                 
             except Exception as e:
                 print(f"Warning: Search error for '{term}': {str(e)}")
                 continue
         
-
+        # Remove duplicates based on company name
         unique_companies = {company.name: company for company in companies}.values()
-        print(f"Total unique companies found: {len(unique_companies)}")
+        print(f"\nTotal unique companies found: {len(unique_companies)}")
+        
+        print("\nCompanies found:")
+        for company in unique_companies:
+            print(f"- {company.name}")
+            if company.rating:
+                print(f"  Rating: {company.rating} stars")
+            if company.pricing:
+                print(f"  Services: {len(company.pricing)} price points found")
+        
         return {**state, "companies": list(unique_companies)}
 

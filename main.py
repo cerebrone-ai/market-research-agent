@@ -31,7 +31,7 @@ async def generate_market_research(topic: str):
         raise e
 
 async def main():
-    topic = "research on Cleaning services in BUffalo, NY and provide details on pricing, services, and contact information"
+    topic = "research on Cleaning services in Charlotte, NC and provide details on pricing, services, contact information, and reviews"
     await generate_market_research(topic)
 
 if __name__ == "__main__":

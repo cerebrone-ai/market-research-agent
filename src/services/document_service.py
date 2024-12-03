@@ -12,10 +12,23 @@ class DocumentService:
             for company in companies:
                 company_dict = company.dict()
                 company_dict['services'] = ', '.join(company_dict['services'])
-                company_dict['pricing'] = '\n'.join([f"{k}: ${v}" for k, v in company_dict['pricing'].items()])
+                company_dict['pricing'] = '\n'.join([f"{k}: {v}" for k, v in company_dict['pricing'].items()])
+                
+                review_details = company_dict.get('review_details', {})
+                company_dict['total_reviews'] = review_details.get('total_reviews', 0)
+                company_dict['highlights'] = '\n'.join(review_details.get('highlights', []))
+                company_dict['concerns'] = '\n'.join(review_details.get('concerns', []))
+                
                 data.append(company_dict)
             
             df = pd.DataFrame(data)
+            
+            column_order = [
+                'name', 'location', 'services', 'pricing', 
+                'rating', 'total_reviews', 'highlights', 'concerns',
+                'contact', 'website'
+            ]
+            df = df[column_order]
             
             os.makedirs('reports', exist_ok=True)
 
