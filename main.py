@@ -34,7 +34,7 @@ async def generate_market_research(topic: str):
 async def main():
  
     #topic = "Generative AI, AI Agents Development, LangChain and CrewAI courses"
-    topic = " House Cleaning Services in Buffalo City, New York"
+    topic = "House Cleaning Services in Charlotte, North Carolina"
     await generate_market_research(topic)
 
 if __name__ == "__main__":

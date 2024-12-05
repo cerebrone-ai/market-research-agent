@@ -44,42 +44,43 @@ class WorkflowNodes:
     async def gather_company_data(self, state):
         """Gather comprehensive research data based on the topic."""
         search_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a research specialist. Extract structured information from search results into this exact format:
+            ("system", """You are a research specialist. Extract structured information from search results into this exact format.
+            You MUST provide actual values for each field - do not return empty or placeholder values.
+            If information is truly not available, use 'Not found' or 'Not available'.
 
             {{
                 "companies": [
                     {{
-                        "name": "Provider Name",
-                        "products": ["Product/Course Name 1", "Product/Course Name 2"],
+                        "name": "REQUIRED: Actual company/provider name",
+                        "products": ["REQUIRED: At least one actual product/course name"],
                         "pricing": {{
-                            "Product/Course Name 1": "Price 1",
-                            "Product/Course Name 2": "Price 2"
+                            "REQUIRED: Product/Course Name": "REQUIRED: Actual price or price range"
                         }},
-                        "website": "website URL",
-                        "contact": "contact information",
-                        "rating": "numerical rating or 'Not found'",
+                        "website": "REQUIRED: Actual website URL or 'Not found'",
+                        "contact": "Contact information or 'Not found'",
+                        "rating": "Numerical rating or 'Not found'",
                         "product_details": {{
                             "features": {{
-                                "Product/Course Name 1": ["Feature 1", "Feature 2"]
+                                "REQUIRED: Product/Course Name": ["REQUIRED: At least 2-3 actual features"]
                             }},
                             "specifications": {{
-                                "Product/Course Name 1": ["Spec 1", "Spec 2"]
+                                "REQUIRED: Product/Course Name": ["At least 2 specifications"]
                             }},
                             "availability": {{
-                                "Product/Course Name 1": "Available/Not Available"
+                                "REQUIRED: Product/Course Name": "Available/Not Available"
                             }}
                         }},
                         "review_analysis": {{
-                            "total_reviews": "number or 'Not found'",
-                            "average_rating": "numerical or 'Not found'",
-                            "positive_points": ["Positive point 1", "Positive point 2"],
-                            "negative_points": ["Negative point 1", "Negative point 2"],
-                            "customer_sentiment": "Overall sentiment description"
+                            "total_reviews": "Number or 'Not found'",
+                            "average_rating": "Numerical or 'Not found'",
+                            "positive_points": ["REQUIRED: At least 2 actual positive points"],
+                            "negative_points": ["At least 2 negative points or 'None reported'"],
+                            "customer_sentiment": "REQUIRED: Actual sentiment description"
                         }},
                         "market_details": {{
-                            "market_share": "Percentage or description",
-                            "target_segment": "Target audience description",
-                            "key_competitors": ["Competitor 1", "Competitor 2"]
+                            "market_share": "Percentage/description or 'Not found'",
+                            "target_segment": "REQUIRED: Actual target audience description",
+                            "key_competitors": ["REQUIRED: At least 2 actual competitors"]
                         }}
                     }}
                 ]
@@ -87,53 +88,84 @@ class WorkflowNodes:
             ("user", """Research topic: {topic}
             Extract detailed information from these search results: {results}
             
-            Remember to:
-            1. Include pricing for each product/course
-            2. Provide all required fields
-            3. Use 'Not available' or 'Not found' for missing information""")
+            Important instructions:
+            1. You MUST provide actual, specific information for each required field
+            2. Do not return empty arrays or placeholder text
+            3. Include real pricing for each product/course
+            4. If information is truly not available, use 'Not found' or 'Not available'
+            5. Ensure company names are real and specific
+            6. Each company entry must have at least one product/course with details""")
         ])
 
         process_results = search_prompt | self.llm_service.long_context_llm.with_structured_output(CompaniesResponse)
 
-        async def perform_search(term):
-            results = await self.llm_service.tavily_search.ainvoke(term)
-            await asyncio.sleep(1)
-            return results
+        async def perform_search(term, max_retries=3):
+            for attempt in range(max_retries):
+                try:
+                    results = await self.llm_service.tavily_search.ainvoke(term)
+                    print(f"Search results for '{term}': {results}")
+                    await asyncio.sleep(5)
+                    return results
+                except Exception as e:
+                    if "429" in str(e) and attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 10
+                        print(f"Rate limit hit, waiting {wait_time} seconds before retry...")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        print(f"Search error for '{term}': {str(e)}")
+                        return []
+            return []
 
         search_queries = []
-        for main_term in state["search_terms"].main_terms:
-            if "course" in state["topic"].lower() or "training" in state["topic"].lower():
+        if "cleaning" in state["topic"].lower():
+            for main_term in state["search_terms"].main_terms[:2]:
                 search_queries.extend([
-                    f"{main_term} course curriculum price",
-                    f"{main_term} training reviews ratings",
-                    f"{main_term} certification learning platform"
+                    f"{main_term} companies prices reviews",
+                    f"{main_term} top rated services"
                 ])
-            elif "product" in state["topic"].lower():
-                search_queries.extend([
-                    f"{main_term} product specifications features",
-                    f"{main_term} price comparison reviews",
-                    f"{main_term} availability retailers"
-                ])
-            else:  
-                search_queries.extend([
-                    f"{main_term} provider details pricing",
-                    f"{main_term} reviews ratings feedback",
-                    f"{main_term} market analysis comparison"
-                ])
+        else:
+            for main_term in state["search_terms"].main_terms:
+                if "course" in state["topic"].lower() or "training" in state["topic"].lower():
+                    search_queries.extend([
+                        f"{main_term} course curriculum price",
+                        f"{main_term} training reviews ratings",
+                        f"{main_term} certification learning platform"
+                    ])
+                elif "product" in state["topic"].lower():
+                    search_queries.extend([
+                        f"{main_term} product specifications features",
+                        f"{main_term} price comparison reviews",
+                        f"{main_term} availability retailers"
+                    ])
+                else:  
+                    search_queries.extend([
+                        f"{main_term} provider details pricing",
+                        f"{main_term} reviews ratings feedback",
+                        f"{main_term} market analysis comparison"
+                    ])
 
         companies = []
-        for query in search_queries:
-            try:
-                results = await perform_search(query)
-                parsed_data = await process_results.ainvoke({
-                    "topic": state["topic"],
-                    "results": results
-                })
-                companies.extend(parsed_data.companies)
-            except Exception as e:
-                print(f"Search error for '{query}': {str(e)}")
-                continue
+        batch_size = 2
+        for i in range(0, len(search_queries), batch_size):
+            batch = search_queries[i:i + batch_size]
+            batch_results = await asyncio.gather(
+                *(perform_search(query) for query in batch)
+            )
             
+            for results in batch_results:
+                if results:
+                    try:
+                        parsed_data = await process_results.ainvoke({
+                            "topic": state["topic"],
+                            "results": results
+                        })
+                        companies.extend(parsed_data.companies)
+                    except Exception as e:
+                        print(f"Parsing error: {str(e)}")
+                        continue
+            
+            await asyncio.sleep(10)
+
         unique_companies = {company.name: company for company in companies}.values()
         
         print(f"\nTotal unique providers/platforms found: {len(unique_companies)}")
