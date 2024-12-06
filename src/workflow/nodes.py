@@ -6,180 +6,270 @@ from typing import List
 from pydantic import BaseModel
 import json
 import asyncio
+from langchain.agents import AgentExecutor, create_openai_functions_agent
+from langchain_core.tools import tool
+from functools import partial
+import pandas as pd
+import re
+import traceback
 
 class CompaniesResponse(BaseModel):
     companies: List[CompanyInfo]
 
+class SearchQuery(BaseModel):
+    """Schema for search query input."""
+    query: str
+
 class WorkflowNodes:
     def __init__(self):
         self.llm_service = LLMService()
+        self.search_company_info = self._create_search_tool()
 
-    async def generate_search_terms(self, state):
-        """Generate focused search terms based on the research topic."""
-        search_terms_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a research specialist. Analyze the given topic and generate relevant search terms.
-            
-            For any topic (products, courses, services, companies, etc.), create three categories of search terms:
-            1. Primary Terms (4-5 terms):
-               - Exact names/titles
-               - Main keywords
-               - Specific identifiers
-               
-            2. Provider/Platform Terms (4-5 terms):
-               - Companies/Organizations offering the item
-               - Platforms/Websites
-               - Distribution channels
-               
-            3. Review/Analysis Terms (3-4 terms):
-               - Reviews and ratings
-               - Comparisons
-               - User experiences/feedback"""),
-            ("user", "Create focused search terms for researching: {topic}")
-        ])
+    def _create_search_tool(self):
+        """Create the search tool with proper instance binding."""
+        @tool(args_schema=SearchQuery)
+        async def search_company_info(query: str) -> str:
+            """Search for company information using Tavily.
+            Args:
+                query: The search query string
+            Returns:
+                str: Search results from Tavily
+            """
+            try:
+                result = await self.llm_service.tavily_search.ainvoke(query)
+                return result
+            except Exception as e:
+                print(f"Search error: {str(e)}")
+                return f"Error performing search: {str(e)}"
         
-        generate_terms = search_terms_prompt | self.llm_service.fast_llm.with_structured_output(SearchTerms)
-        search_terms = await generate_terms.ainvoke({"topic": state["topic"]})
-        return {**state, "search_terms": search_terms}
+        return search_company_info
 
     async def gather_company_data(self, state):
-        """Gather comprehensive research data based on the topic."""
-        search_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a research specialist. Extract structured information from search results into this exact format.
-            You MUST provide actual values for each field - do not return empty or placeholder values.
-            If information is truly not available, use 'Not found' or 'Not available'.
+        """Gather comprehensive research data using an agent-based approach."""
+        if isinstance(state["search_terms"], dict):
+            state["search_terms"] = SearchTerms(**state["search_terms"])
 
+        agent_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a research specialist agent. Your task is to gather detailed information about companies, 
+            products, or services based on the given topic. Use the search tool to find comprehensive information.
+            
+            Follow these guidelines:
+            1. Search for specific company names, products, and pricing
+            2. Gather detailed features and specifications
+            3. Find customer reviews and ratings
+            4. Look for market information and competitors
+            
+            When using the search_company_info tool, provide a search query string.
+            Example: search_company_info("<topic> in <location>")
+            
+            Format all information into a list of companies with the following structure:
             {{
                 "companies": [
                     {{
-                        "name": "REQUIRED: Actual company/provider name",
-                        "products": ["REQUIRED: At least one actual product/course name"],
-                        "pricing": {{
-                            "REQUIRED: Product/Course Name": "REQUIRED: Actual price or price range"
-                        }},
-                        "website": "REQUIRED: Actual website URL or 'Not found'",
-                        "contact": "Contact information or 'Not found'",
-                        "rating": "Numerical rating or 'Not found'",
-                        "product_details": {{
-                            "features": {{
-                                "REQUIRED: Product/Course Name": ["REQUIRED: At least 2-3 actual features"]
-                            }},
-                            "specifications": {{
-                                "REQUIRED: Product/Course Name": ["At least 2 specifications"]
-                            }},
-                            "availability": {{
-                                "REQUIRED: Product/Course Name": "Available/Not Available"
-                            }}
-                        }},
-                        "review_analysis": {{
-                            "total_reviews": "Number or 'Not found'",
-                            "average_rating": "Numerical or 'Not found'",
-                            "positive_points": ["REQUIRED: At least 2 actual positive points"],
-                            "negative_points": ["At least 2 negative points or 'None reported'"],
-                            "customer_sentiment": "REQUIRED: Actual sentiment description"
-                        }},
-                        "market_details": {{
-                            "market_share": "Percentage/description or 'Not found'",
-                            "target_segment": "REQUIRED: Actual target audience description",
-                            "key_competitors": ["REQUIRED: At least 2 actual competitors"]
-                        }}
+                        "name": "Company Name",
+                        "description": "Brief description",
+                        "products": ["Service 1", "Service 2"],
+                        "pricing": {{"Service 1": "$X/hour", "Service 2": "$Y/visit"}},
+                        "rating": "4.5/5",
+                        "contact": "phone or email",
+                        "website": "url"
                     }}
                 ]
             }}"""),
-            ("user", """Research topic: {topic}
-            Extract detailed information from these search results: {results}
-            
-            Important instructions:
-            1. You MUST provide actual, specific information for each required field
-            2. Do not return empty arrays or placeholder text
-            3. Include real pricing for each product/course
-            4. If information is truly not available, use 'Not found' or 'Not available'
-            5. Ensure company names are real and specific
-            6. Each company entry must have at least one product/course with details""")
+            ("user", "{input}"),
+            ("assistant", "I'll help you research that topic."),
+            ("human", "Required information structure: {format_instructions}"),
+            ("assistant", "{agent_scratchpad}")
         ])
 
-        process_results = search_prompt | self.llm_service.long_context_llm.with_structured_output(CompaniesResponse)
+        tools = [self.search_company_info]
+        agent = create_openai_functions_agent(
+            llm=self.llm_service.long_context_llm,
+            prompt=agent_prompt,
+            tools=tools
+        )
 
-        async def perform_search(term, max_retries=3):
-            for attempt in range(max_retries):
-                try:
-                    results = await self.llm_service.tavily_search.ainvoke(term)
-                    print(f"Search results for '{term}': {results}")
-                    await asyncio.sleep(5)
-                    return results
-                except Exception as e:
-                    if "429" in str(e) and attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 10
-                        print(f"Rate limit hit, waiting {wait_time} seconds before retry...")
-                        await asyncio.sleep(wait_time)
-                    else:
-                        print(f"Search error for '{term}': {str(e)}")
-                        return []
-            return []
+        agent_executor = AgentExecutor(
+            agent=agent,
+            tools=tools,
+            verbose=True,
+            handle_parsing_errors=True
+        )
 
-        search_queries = []
-        if "cleaning" in state["topic"].lower():
-            for main_term in state["search_terms"].main_terms[:2]:
-                search_queries.extend([
-                    f"{main_term} companies prices reviews",
-                    f"{main_term} top rated services"
-                ])
-        else:
-            for main_term in state["search_terms"].main_terms:
-                if "course" in state["topic"].lower() or "training" in state["topic"].lower():
-                    search_queries.extend([
-                        f"{main_term} course curriculum price",
-                        f"{main_term} training reviews ratings",
-                        f"{main_term} certification learning platform"
-                    ])
-                elif "product" in state["topic"].lower():
-                    search_queries.extend([
-                        f"{main_term} product specifications features",
-                        f"{main_term} price comparison reviews",
-                        f"{main_term} availability retailers"
-                    ])
-                else:  
-                    search_queries.extend([
-                        f"{main_term} provider details pricing",
-                        f"{main_term} reviews ratings feedback",
-                        f"{main_term} market analysis comparison"
-                    ])
+        search_queries = self._generate_search_queries(state["topic"], state["search_terms"])
+        print(f"Generated search queries: {search_queries}")
 
         companies = []
-        batch_size = 2
-        for i in range(0, len(search_queries), batch_size):
-            batch = search_queries[i:i + batch_size]
-            batch_results = await asyncio.gather(
-                *(perform_search(query) for query in batch)
-            )
-            
-            for results in batch_results:
-                if results:
-                    try:
-                        parsed_data = await process_results.ainvoke({
-                            "topic": state["topic"],
-                            "results": results
-                        })
-                        companies.extend(parsed_data.companies)
-                    except Exception as e:
-                        print(f"Parsing error: {str(e)}")
-                        continue
-            
-            await asyncio.sleep(10)
+        for query in search_queries:
+            try:
+                result = await agent_executor.ainvoke({
+                    "topic": state["topic"],
+                    "format_instructions": """Return a JSON object with a 'companies' array containing company information.
+                    Each company should have: name, description, products (array), pricing (object), rating, contact, and website.""",
+                    "input": f"Research {state['topic']}. Focus on the query: {query}"
+                })
+                
+                print(f"Raw result for query '{query}': {result}")
 
-        unique_companies = {company.name: company for company in companies}.values()
+            
+                if isinstance(result, dict):
+                    if "companies" in result:
+                        companies.extend(result["companies"])
+                    elif "output" in result:
+                       
+                        output = result["output"]
+                        if isinstance(output, str):
+                
+                            output = output.replace("```json", "").replace("```", "").strip()
+                            try:
+                                parsed_data = json.loads(output)
+                                if "companies" in parsed_data:
+                                    companies.extend(parsed_data["companies"])
+                            except Exception as e:
+                                print(f"JSON parsing error for output: {str(e)}")
+                elif isinstance(result, str):
+                    try:
+             
+                        result = result.replace("```json", "").replace("```", "").strip()
+                        json_match = re.search(r'\{[\s\S]*\}', result)
+                        if json_match:
+                            parsed_data = json.loads(json_match.group())
+                            if "companies" in parsed_data:
+                                companies.extend(parsed_data["companies"])
+                    except Exception as e:
+                        print(f"JSON parsing error for query '{query}': {str(e)}")
+                
+                await asyncio.sleep(5)  # Rate limiting
+                
+            except Exception as e:
+                print(f"Agent execution error for query '{query}': {str(e)}")
+                continue
+
         
+        unique_companies = {}
+        for company in companies:
+            if company.get("name") and company["name"] not in unique_companies:
+              
+                products = ", ".join(company.get("products", []))
+                pricing = "; ".join([f"{k}: {v}" for k, v in company.get("pricing", {}).items()])
+                
+             
+                website = company.get("website", "")
+                if isinstance(website, list):
+                    website = " | ".join(website)
+                
+                unique_companies[company["name"]] = {
+                    "name": company["name"],
+                    "description": company.get("description", ""),
+                    "products": products,
+                    "pricing": pricing,
+                    "rating": company.get("rating", ""),
+                    "contact": company.get("contact", ""),
+                    "website": website
+                }
+        
+        # Log results
         print(f"\nTotal unique providers/platforms found: {len(unique_companies)}")
+
+        if unique_companies:
+            try:
+                import pandas as pd
+                from pathlib import Path
+                
         
-        print("\nRelevant results found:")
-        for company in unique_companies:
-            print(f"- {company.name}")
-            if company.products:
-                print(f"  Products: {', '.join(company.products)}")
-            if company.rating:
-                print(f"  Rating: {company.rating}")
-            if company.pricing:
-                for product, price in company.pricing.items():
-                    print(f"  Price for {product}: {price}")
-        
-        return {**state, "companies": list(unique_companies)}
+                Path("reports").mkdir(exist_ok=True)
+                
+
+                df = pd.DataFrame.from_dict(unique_companies, orient='index')
+                
+ 
+                excel_path = "reports/market_research.xlsx"
+                df.to_excel(excel_path, index=False)
+                print(f"\nMarket research saved to: {excel_path}")
+                
+   
+                company_objects = []
+                for data in unique_companies.values():
+  
+                    pricing_dict = {}
+                    if data["pricing"]:
+                        try:
+                            pricing_dict = dict(item.split(": ", 1) for item in data["pricing"].split("; ") if ": " in item)
+                        except Exception as e:
+                            print(f"Error parsing pricing for company {data['name']}: {str(e)}")
+                    
+                    company_objects.append(CompanyInfo(
+                        name=data["name"],
+                        description=data["description"],
+                        products=data["products"].split(", ") if data["products"] else [],
+                        pricing=pricing_dict,
+                        rating=data["rating"],
+                        contact=data["contact"],
+                        website=data["website"]
+                    ))
+                
+                return {**state, "companies": company_objects}
+                
+            except Exception as e:
+                print(f"Error exporting to Excel: {str(e)}")
+                traceback.print_exc()  
+                return {**state, "companies": []}
+        else:
+            print("Warning: No valid data to export")
+            with open("reports/no_data.txt", "w") as f:
+                f.write("No data was found for the given topic.")
+            return {**state, "companies": []}
+
+    def _generate_search_queries(self, topic: str, search_terms: SearchTerms) -> List[str]:
+        """Helper method to generate search queries based on the topic."""
+        queries = []
+        if "cleaning" in topic.lower():
+            for term in search_terms.main_terms[:2]:
+                queries.extend([
+                    f"{term} companies prices reviews",
+                    f"{term} top rated services"
+                ])
+        else:
+            for term in search_terms.main_terms:
+                if "course" in topic.lower() or "training" in topic.lower():
+                    queries.extend([
+                        f"{term} course curriculum price",
+                        f"{term} training reviews ratings",
+                        f"{term} certification learning platform"
+                    ])
+                elif "product" in topic.lower():
+                    queries.extend([
+                        f"{term} product specifications features",
+                        f"{term} price comparison reviews",
+                        f"{term} availability retailers"
+                    ])
+                else:
+                    queries.extend([
+                        f"{term} provider details pricing",
+                        f"{term} reviews ratings feedback",
+                        f"{term} market analysis comparison"
+                    ])
+        return queries
+
+    async def generate_search_terms(self, state):
+        """Generate search terms for the given topic."""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a market research specialist. Your task is to generate relevant search terms for researching companies and services in a given topic.
+            Break down the topic into main search terms and related terms that will help find comprehensive information."""),
+            ("user", """Generate search terms for the topic: {topic}
+            
+            Required format:
+            {format_instructions}""")
+        ])
+
+        parser = JsonOutputParser(pydantic_object=SearchTerms)
+
+        chain = prompt | self.llm_service.long_context_llm | parser
+
+        search_terms = await chain.ainvoke({
+            "topic": state["topic"],
+            "format_instructions": parser.get_format_instructions()
+        })
+
+        return {**state, "search_terms": search_terms}
 
