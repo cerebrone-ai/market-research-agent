@@ -3,6 +3,8 @@ from src.services.document_service import DocumentService
 from src.workflow.graph import ResearchWorkflow
 from dotenv import load_dotenv
 import os
+import re
+import json
 
 load_dotenv()
 
@@ -35,7 +37,7 @@ async def main():
  
     #topic = "Generative AI, AI Agents Development, LangChain and CrewAI courses"
     topic = "House Cleaning Services in Charlotte, North Carolina"
-    #topic = "Indian Restaurants in Charlotte, North Carolina"
+    #topic = "AI Agents Development, LangChain, LangGraph and CrewAI courses"
     await generate_market_research(topic)
 
 if __name__ == "__main__":

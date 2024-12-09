@@ -44,6 +44,10 @@ class WorkflowNodes:
         
         return search_company_info
 
+    def _normalize_service_name(self, service: str) -> str:
+        """Normalize service names to prevent duplicates with different capitalizations."""
+        return service.lower().strip()
+
     async def gather_company_data(self, state):
         """Gather comprehensive research data using an agent-based approach."""
         if isinstance(state["search_terms"], dict):
@@ -51,46 +55,44 @@ class WorkflowNodes:
 
         agent_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are an expert research specialist agent focused on gathering comprehensive market information. 
-            Your task is to collect detailed data about companies, products, services, and educational platforms related to the given topic. Collect atleast 50 data points.
+            Your task is to collect detailed data about companies, products, services, and educational platforms related to the given topic. You MUST collect at least 100 unique companies.
             
             Follow these detailed guidelines:
             1. SEARCH COMPREHENSIVELY:
                - Use multiple search queries to find different types of providers
                - Look for both major and niche providers
-               - Consider international and local options when required
-               - Search for both established and emerging players
+               - Consider both national chains and local providers
+               - Search specifically for companies with verified reviews on Yelp, Google, or other platforms
             
             2. GATHER DETAILED INFORMATION:
                - Company names and full descriptions
-               - Complete product/service listings
+               - List ALL services offered by the company in a single entry
+               - Include review scores from Yelp, Google, or other platforms
+               - If ratings are not found initially, perform additional searches
                - Detailed pricing information when available
-               - User ratings and reviews
                - Contact information and locations
-               - Official websites and platforms
-               - Certifications and accreditations
-               - Market position and unique selling points
+               - Official websites
             
             3. ENSURE DATA QUALITY:
-               - Verify information from multiple sources when possible
-               - Include specific details rather than generic descriptions
-               - Note when information is not available or requires direct contact
-               - Provide context for pricing (e.g., subscription type, duration)
+               - Verify information from multiple sources
+               - Consolidate all services into a single company entry
+               - Always include review/rating information from Yelp or Google
+               - Note when information is not available
             
             When using the search_company_info tool:
-            - Break down complex topics into specific search queries
-            - Use different combinations of keywords
-            - Include industry-specific terms
-            - Search for reviews and comparisons
+            - Search specifically for review information if not found initially
+            - Use "company name + reviews" as additional search when needed
+            - Look for Yelp and Google Business listings
             
             Format all information precisely into this structure:
             {{
                 "companies": [
                     {{
                         "name": "Exact Company Name",
-                        "description": "Detailed description including unique features and market position",
-                        "products": ["Specific Product/Service 1", "Specific Product/Service 2"],
-                        "pricing": {{"Product 1": "Exact price or range", "Product 2": "Exact price or range"}},
-                        "rating": "Numerical rating if available, or detailed reputation information",
+                        "description": "Detailed description including unique features",
+                        "services": ["All services in a single list"],
+                        "pricing": {{"Service Category": "Price range"}},
+                        "rating": "Rating (Source: Yelp/Google)",
                         "contact": "All available contact methods",
                         "website": "Primary website URL"
                     }}
@@ -125,21 +127,19 @@ class WorkflowNodes:
                 result = await agent_executor.ainvoke({
                     "topic": state["topic"],
                     "format_instructions": """Return a JSON object with a 'companies' array containing company information.
-                    Each company should have: name, description, products (array), pricing (object), rating, contact, and website.""",
+                    Each company should have: name, description, services (array), pricing (object), rating, contact, and website.""",
                     "input": f"Research {state['topic']}. Focus on the query: {query}"
                 })
                 
                 print(f"Raw result for query '{query}': {result}")
 
-            
                 if isinstance(result, dict):
                     if "companies" in result:
                         companies.extend(result["companies"])
                     elif "output" in result:
-                       
                         output = result["output"]
                         if isinstance(output, str):
-                
+   
                             output = output.replace("```json", "").replace("```", "").strip()
                             try:
                                 parsed_data = json.loads(output)
@@ -149,7 +149,6 @@ class WorkflowNodes:
                                 print(f"JSON parsing error for output: {str(e)}")
                 elif isinstance(result, str):
                     try:
-             
                         result = result.replace("```json", "").replace("```", "").strip()
                         json_match = re.search(r'\{[\s\S]*\}', result)
                         if json_match:
@@ -159,154 +158,91 @@ class WorkflowNodes:
                     except Exception as e:
                         print(f"JSON parsing error for query '{query}': {str(e)}")
                 
-                await asyncio.sleep(5)  # Rate limiting
+                
+                await asyncio.sleep(10)  #10sec delay between requests
                 
             except Exception as e:
                 print(f"Agent execution error for query '{query}': {str(e)}")
+                await asyncio.sleep(20) 
                 continue
 
-        
+
         unique_companies = {}
         for company in companies:
-            if company.get("name") and company["name"] not in unique_companies:
+            name = company.get("name")
+            if name:
                 try:
-                    # Handle products list
-                    products = company.get("products", [])
-                    if isinstance(products, list):
-                        products = ", ".join(products)
-                    elif isinstance(products, str):
-                        products = products
-                    else:
-                        products = ""
+                    services = company.get("services", [])
+                    if isinstance(services, str):
+                        services = [s.strip() for s in services.split(",")]
+                    elif not isinstance(services, list):
+                        services = []
 
-                    pricing = company.get("pricing", {})
-                    if isinstance(pricing, dict):
-                        pricing = "; ".join([f"{k}: {v}" for k, v in pricing.items()])
-                    elif isinstance(pricing, str):
-                        pricing = pricing
+                    if name in unique_companies:
+                        existing_services = set(unique_companies[name]["services"])
+                        new_services = set(services)
+                        unique_companies[name]["services"] = list(existing_services.union(new_services))
                     else:
-                        pricing = ""
-
-             
-                    website = company.get("website", "")
-                    if isinstance(website, list):
-                        website = " | ".join(website)
-                    
-                    unique_companies[company["name"]] = {
-                        "name": company["name"],
-                        "description": company.get("description", ""),
-                        "products": products,
-                        "pricing": pricing,
-                        "rating": company.get("rating", ""),
-                        "contact": company.get("contact", ""),
-                        "website": website
-                    }
+                   
+                        unique_companies[name] = {
+                            "name": name,
+                            "services": services
+                        }
                 except Exception as e:
-                    print(f"Error processing company {company.get('name', 'Unknown')}: {str(e)}")
+                    print(f"Error processing company {name}: {str(e)}")
                     continue
-        
-        # Log results
-        print(f"\nTotal unique providers/platforms found: {len(unique_companies)}")
-        
-  
+
+     
         if unique_companies:
             try:
-                import pandas as pd
-                from pathlib import Path
-
-                Path("reports").mkdir(exist_ok=True)
+                data = []
+                for name, company_data in unique_companies.items():
+                    services_str = ", ".join(company_data["services"])
+                    data.append({
+                        "Company Name": name,
+                        "Services": services_str
+                    })
                 
-       
-                df = pd.DataFrame.from_dict(unique_companies, orient='index')
-                
-                # Save to Excel
+                df = pd.DataFrame(data)
                 excel_path = "reports/market_research.xlsx"
                 df.to_excel(excel_path, index=False)
                 print(f"\nMarket research saved to: {excel_path}")
                 
-      
-                company_objects = []
-                for data in unique_companies.values():
-                    try:
-          
-                        pricing_dict = {}
-                        if data["pricing"]:
-                            if ";" in data["pricing"]:
-                              
-                                pricing_items = data["pricing"].split(";")
-                                for item in pricing_items:
-                                    if ":" in item:
-                                        key, value = item.split(":", 1)
-                                        pricing_dict[key.strip()] = value.strip()
-                            else:
-                               
-                                pricing_dict = {"Price": data["pricing"].strip()}
-                        
-                        company_objects.append(CompanyInfo(
-                            name=data["name"],
-                            description=data["description"],
-                            products=data["products"].split(", ") if data["products"] else [],
-                            pricing=pricing_dict,
-                            rating=data["rating"],
-                            contact=data["contact"],
-                            website=data["website"]
-                        ))
-                    except Exception as e:
-                        print(f"Error creating CompanyInfo object for {data['name']}: {str(e)}")
-                        continue
-                
-                return {**state, "companies": company_objects}
-                
+                return {**state, "companies": list(unique_companies.values())}
             except Exception as e:
-                print(f"Error exporting to Excel: {str(e)}")
-                traceback.print_exc()
+                print(f"Error creating output: {str(e)}")
                 return {**state, "companies": []}
         else:
-            print("Warning: No valid data to export")
-            with open("reports/no_data.txt", "w") as f:
-                f.write("No data was found for the given topic.")
+            print("No valid data found")
             return {**state, "companies": []}
 
     def _generate_search_queries(self, topic: str, search_terms: SearchTerms) -> List[str]:
-        """Generate comprehensive search queries based on the topic."""
         queries = []
-        
-
         base_terms = [topic] + search_terms.main_terms + search_terms.related_terms
         
+        
+        location_match = re.search(r'in (\w+)', topic, re.IGNORECASE)
+        location = location_match.group(1) if location_match else ""
 
-        modifiers = [
+        general_modifiers = [
             "top rated", "best", "popular",
             "reviews", "comparison", "alternatives",
-            "pricing", "cost", "fees",
-            "certification", "training", "courses",
-            "features", "benefits", "advantages",
-            "professional", "enterprise", "startup",
-            "beginner", "advanced", "expert level"
+            "pricing", "cost", "fees"
         ]
-        
-   
-        for term in base_terms:
- 
-            queries.append(f"{term} providers platforms")
-            queries.append(f"{term} companies services")
-            
 
-            for mod in modifiers:
+        if location:
+            location_modifiers = [f"in {location}", f"near {location}", f"{location} area"]
+            general_modifiers.extend(location_modifiers)
+
+        for term in base_terms:
+            queries.append(f"{term} providers")
+            queries.append(f"{term} companies")
+            
+            for mod in general_modifiers:
                 queries.append(f"{term} {mod}")
-                
-            if "course" in topic.lower() or "training" in topic.lower():
-                edu_modifiers = [
-                    "online courses", "certification programs",
-                    "training platforms", "learning resources",
-                    "tutorials", "workshops", "bootcamps"
-                ]
-                for edu_mod in edu_modifiers:
-                    queries.append(f"{term} {edu_mod}")
-        
-      
+
         queries = list(set(queries))
-        return queries[:30] 
+        return queries[:50]  
 
     async def generate_search_terms(self, state):
         """Generate search terms for the given topic."""
