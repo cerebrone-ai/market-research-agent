@@ -35,6 +35,7 @@ async def main():
  
     #topic = "Generative AI, AI Agents Development, LangChain and CrewAI courses"
     topic = "House Cleaning Services in Charlotte, North Carolina"
+    #topic = "Indian Restaurants in Charlotte, North Carolina"
     await generate_market_research(topic)
 
 if __name__ == "__main__":
