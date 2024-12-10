@@ -12,6 +12,7 @@ from functools import partial
 import pandas as pd
 import re
 import traceback
+import os
 
 class CompaniesResponse(BaseModel):
     companies: List[CompanyInfo]
@@ -55,7 +56,7 @@ class WorkflowNodes:
 
         agent_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are an expert research specialist agent focused on gathering comprehensive market information. 
-            Your task is to collect detailed data about companies, products, services, and educational platforms related to the given topic. You MUST collect at least 100 unique companies.
+            Your task is to collect detailed data about companies, products, services, and educational platforms related to the given topic. You MUST collect at least 200 unique companies data with services, pricing, rating, contact, and reviews.
             
             Follow these detailed guidelines:
             1. SEARCH COMPREHENSIVELY:
@@ -133,88 +134,81 @@ class WorkflowNodes:
                 
                 print(f"Raw result for query '{query}': {result}")
 
+      
                 if isinstance(result, dict):
                     if "companies" in result:
                         companies.extend(result["companies"])
                     elif "output" in result:
                         output = result["output"]
                         if isinstance(output, str):
-   
+ 
                             output = output.replace("```json", "").replace("```", "").strip()
                             try:
-                                parsed_data = json.loads(output)
-                                if "companies" in parsed_data:
-                                    companies.extend(parsed_data["companies"])
-                            except Exception as e:
-                                print(f"JSON parsing error for output: {str(e)}")
-                elif isinstance(result, str):
-                    try:
-                        result = result.replace("```json", "").replace("```", "").strip()
-                        json_match = re.search(r'\{[\s\S]*\}', result)
-                        if json_match:
-                            parsed_data = json.loads(json_match.group())
-                            if "companies" in parsed_data:
-                                companies.extend(parsed_data["companies"])
-                    except Exception as e:
-                        print(f"JSON parsing error for query '{query}': {str(e)}")
+
+                                json_match = re.search(r'\{[\s\S]*\}', output)
+                                if json_match:
+                                    parsed_data = json.loads(json_match.group())
+                                    if "companies" in parsed_data:
+                                        companies.extend(parsed_data["companies"])
+                            except json.JSONDecodeError as e:
+                                print(f"JSON parsing error: {str(e)}")
+                                continue
                 
-                
-                await asyncio.sleep(10)  #10sec delay between requests
+                await asyncio.sleep(10)  # 10sec delay between requests
                 
             except Exception as e:
                 print(f"Agent execution error for query '{query}': {str(e)}")
-                await asyncio.sleep(20) 
+                await asyncio.sleep(20)
                 continue
 
-
-        unique_companies = {}
-        for company in companies:
-            name = company.get("name")
-            if name:
-                try:
-                    services = company.get("services", [])
-                    if isinstance(services, str):
-                        services = [s.strip() for s in services.split(",")]
-                    elif not isinstance(services, list):
-                        services = []
-
-                    if name in unique_companies:
-                        existing_services = set(unique_companies[name]["services"])
-                        new_services = set(services)
-                        unique_companies[name]["services"] = list(existing_services.union(new_services))
-                    else:
-                   
-                        unique_companies[name] = {
-                            "name": name,
-                            "services": services
-                        }
-                except Exception as e:
-                    print(f"Error processing company {name}: {str(e)}")
-                    continue
-
-     
-        if unique_companies:
+        if companies:
             try:
-                data = []
-                for name, company_data in unique_companies.items():
-                    services_str = ", ".join(company_data["services"])
-                    data.append({
-                        "Company Name": name,
-                        "Services": services_str
-                    })
+
+                unique_companies = {}
+
+                for company in companies:
+                    if isinstance(company, dict) and "name" in company:
+                        name = company["name"].strip()
+                        
+                        company_data = {
+                            "Company Name": name,
+                            "Description": company.get("description", "Not available"),
+                            "Services": ", ".join(company.get("services", [])) if company.get("services") else "Not available",
+                            "Rating": company.get("rating", "Not available"),
+                            "Contact": company.get("contact", "Not available"),
+                            "Website": company.get("website", "Not available"),
+                            "Pricing": str(company.get("pricing", {})) if company.get("pricing") else "Not available"
+                        }
+                        
+ 
+                        if name not in unique_companies:
+                            unique_companies[name] = company_data
+                        else:
+
+                            for key, value in company_data.items():
+                                if value != "Not available" and unique_companies[name][key] == "Not available":
+                                    unique_companies[name][key] = value
                 
-                df = pd.DataFrame(data)
-                excel_path = "reports/market_research.xlsx"
-                df.to_excel(excel_path, index=False)
-                print(f"\nMarket research saved to: {excel_path}")
+
+                processed_companies = list(unique_companies.values())
                 
-                return {**state, "companies": list(unique_companies.values())}
+                if processed_companies:
+     
+                    df = pd.DataFrame(processed_companies)
+                    
+                    os.makedirs("reports", exist_ok=True)
+                    
+                    excel_path = "reports/market_research.xlsx"
+                    df.to_excel(excel_path, index=False)
+                    print(f"\nMarket research saved to: {excel_path}")
+                    
+                    return {**state, "companies": processed_companies}
+                
             except Exception as e:
-                print(f"Error creating output: {str(e)}")
-                return {**state, "companies": []}
-        else:
-            print("No valid data found")
-            return {**state, "companies": []}
+                print(f"Error processing companies: {str(e)}\n{traceback.format_exc()}")
+        
+        print("No valid data found")
+        return {**state, "companies": []}
 
     def _generate_search_queries(self, topic: str, search_terms: SearchTerms) -> List[str]:
         queries = []
@@ -242,7 +236,7 @@ class WorkflowNodes:
                 queries.append(f"{term} {mod}")
 
         queries = list(set(queries))
-        return queries[:50]  
+        return queries[:20]  
 
     async def generate_search_terms(self, state):
         """Generate search terms for the given topic."""
