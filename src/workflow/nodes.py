@@ -56,7 +56,7 @@ class WorkflowNodes:
 
         agent_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are an expert research specialist agent focused on gathering comprehensive market information. 
-            Your task is to collect detailed data about companies, products, services, and educational platforms related to the given topic. You MUST collect at least 200 unique companies data with services, pricing, rating, contact, and reviews.
+            Your task is to collect detailed data about companies, products, services, and educational platforms related to the given topic. You MUST collect at least 500 unique companies data with services, pricing, rating, contact, and reviews.
             
             Follow these detailed guidelines:
             1. SEARCH COMPREHENSIVELY:
@@ -236,7 +236,7 @@ class WorkflowNodes:
                 queries.append(f"{term} {mod}")
 
         queries = list(set(queries))
-        return queries[:20]  
+        return queries[:50]  
 
     async def generate_search_terms(self, state):
         """Generate search terms for the given topic."""

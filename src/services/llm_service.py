@@ -9,4 +9,4 @@ class LLMService:
         self.long_context_llm = ChatOpenAI(model=LONG_CONTEXT_MODEL)
         self.embeddings = OpenAIEmbeddings(model=EMBEDDINGS_MODEL)
         self.wikipedia_retriever = WikipediaRetriever(load_all_available_meta=True, top_k_results=3)
-        self.tavily_search = TavilySearchResults(max_results=3) 
+        self.tavily_search = TavilySearchResults(max_results=15) 
